@@ -50,8 +50,21 @@ Pmax_po  = np.max(Ppv_po [G_po  == 1000])   # máximo real alcanzado en G=1000
 Pmax_pso = np.max(Ppv_pso[G_pso == 1000])
 umbral_po  = 0.90 * Pmax_po
 umbral_pso = 0.90 * Pmax_pso
-conv_po  = t_po [np.argmax(Ppv_po  > umbral_po )] if np.any(Ppv_po  > umbral_po ) else float('nan')
-conv_pso = t_pso[np.argmax(Ppv_pso > umbral_pso)] if np.any(Ppv_pso > umbral_pso) else float('nan')
+
+def tiempo_convergencia(t, Ppv, G, umbral, ventana=10):
+    """
+    Primer instante (después de t=50ms) donde Ppv supera el umbral
+    y se mantiene por encima durante al menos `ventana` muestras consecutivas.
+    Solo se evalúa en períodos de G=1000 W/m².
+    """
+    inicio = np.searchsorted(t, 50)   # ignorar los primeros 50ms
+    for i in range(inicio, len(t) - ventana):
+        if G[i] == 1000 and np.all(Ppv[i:i+ventana] > umbral):
+            return t[i]
+    return float('nan')
+
+conv_po  = tiempo_convergencia(t_po,  Ppv_po,  G_po,  umbral_po)
+conv_pso = tiempo_convergencia(t_pso, Ppv_pso, G_pso, umbral_pso)
 
 # Ripple en estado estacionario (desviación estándar de Ppv en zona estable)
 ripple_po  = np.std(Ppv_po[mask_po])
