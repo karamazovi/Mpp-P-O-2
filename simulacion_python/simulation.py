@@ -90,7 +90,7 @@ mppt  = MPPT_PandO(parametros_mppt)
 # Inicializar cerca del punto de operación para evitar que el inductor quede a 0
 # y el panel suba a Voc sin carga.
 Vci = 15.0    # voltaje de arranque (V) — por debajo del MPP (18.1V)
-IL  = panel.calcular(irradiancia, temperatura, Vci)  # corriente de arranque (A)
+IL  = panel.calcular(1000.0, temperatura, Vci)  # corriente de arranque (A)
 Vco = VB      # capacitor de salida ≈ batería (V)
 D   = D_init
 
