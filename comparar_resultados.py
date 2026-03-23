@@ -67,9 +67,9 @@ else:
     # Vpv durante G=100: baja a ~16.8V, Ppv ≈ 0.8W (casi 0)
     # Vpv durante G=1000: oscila ~18.0–18.2V, Ppv ≈ 83–85W
     segments = [
-        _seg(0,    50,   19.2, 18.5, 92,  88),   # transitorio inicial
-        _seg(50,   150,  18.5, 18.2, 88,  84),
-        _seg(150,  290,  18.2, 18.1, 84,  83),
+        _seg(0,    50,   18.5, 18.2, 85,  84),   # transitorio inicial
+        _seg(50,   150,  18.2, 18.1, 84,  83),
+        _seg(150,  290,  18.1, 18.1, 83,  83),
         _seg(290,  310,  18.1, 16.8, 83,   2),   # inicio sombreado 1
         _seg(310,  440,  16.8, 16.8,  2,   2),   # sombreado 1 (G=100)
         _seg(440,  480,  16.8, 18.0,  2,  80),   # fin sombreado 1
@@ -275,9 +275,11 @@ filas_mat_vpv  = f'{np.mean(Vpv_mat_ss):.3f} V' if len(Vpv_mat_ss) else 'N/A'
 filas_mat_eff  = f'{np.mean(Ppv_mat_ss)/Pmpp*100:.1f} %' if len(Ppv_mat_ss) else 'N/A'
 mat_suffix     = '' if MATLAB_REAL else ' *'
 
+Pmax_mat = np.max(Ppv_mat[Ppv_mat > 10]) if np.any(Ppv_mat > 10) else float('nan')
+
 for i, fila in enumerate(filas):
     if   i == 0: filas[i].append(f'{Pmpp} W @ {Vmpp} V')
-    elif i == 1: filas[i].append('N/A')
+    elif i == 1: filas[i].append(f'{Pmax_mat:.2f} W' + mat_suffix)
     elif i == 2: filas[i].append(filas_mat_ppv + mat_suffix)
     elif i == 3: filas[i].append(filas_mat_eff + mat_suffix)
     elif i == 4: filas[i].append(filas_mat_vpv + mat_suffix)
