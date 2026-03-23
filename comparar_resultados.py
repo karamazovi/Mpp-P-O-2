@@ -61,26 +61,31 @@ else:
         p = np.linspace(p0, p1, n)
         return t, v, p
 
+    # Perfil de irradiancia (mismo que simulation.py):
+    #   G=100 W/m²: 290–440ms, 880–990ms, 1180–1290ms, 1380–1540ms
+    #   G=1000 W/m²: resto del tiempo (0–290ms, 440–880ms, ...)
+    # Vpv durante G=100: baja a ~16.8V, Ppv ≈ 0.8W (casi 0)
+    # Vpv durante G=1000: oscila ~18.0–18.2V, Ppv ≈ 83–85W
     segments = [
-        _seg(0,    50,   19.2, 18.5, 92,  88),
+        _seg(0,    50,   19.2, 18.5, 92,  88),   # transitorio inicial
         _seg(50,   150,  18.5, 18.2, 88,  84),
         _seg(150,  290,  18.2, 18.1, 84,  83),
         _seg(290,  310,  18.1, 16.8, 83,   2),   # inicio sombreado 1
-        _seg(310,  440,  16.8, 16.8,  2,   2),   # sombreado 1
+        _seg(310,  440,  16.8, 16.8,  2,   2),   # sombreado 1 (G=100)
         _seg(440,  480,  16.8, 18.0,  2,  80),   # fin sombreado 1
         _seg(480,  880,  18.0, 18.1, 80,  83),   # estable
         _seg(880,  900,  18.1, 16.8, 83,   2),   # inicio sombreado 2
-        _seg(900,  990,  16.8, 16.8,  2,   2),
-        _seg(990, 1010,  16.8, 18.0,  2,  80),
+        _seg(900,  990,  16.8, 16.8,  2,   2),   # sombreado 2 (G=100)
+        _seg(990, 1010,  16.8, 18.0,  2,  80),   # fin sombreado 2
         _seg(1010,1180,  18.0, 18.1, 80,  83),
         _seg(1180,1200,  18.1, 16.8, 83,   2),   # inicio sombreado 3
-        _seg(1200,1290,  16.8, 16.8,  2,   2),
-        _seg(1290,1310,  16.8, 18.0,  2,  80),
+        _seg(1200,1290,  16.8, 16.8,  2,   2),   # sombreado 3 (G=100)
+        _seg(1290,1310,  16.8, 18.0,  2,  80),   # fin sombreado 3
         _seg(1310,1380,  18.0, 18.1, 80,  83),
         _seg(1380,1400,  18.1, 16.8, 83,   2),   # inicio sombreado 4
-        _seg(1400,1540,  16.8, 16.8,  2,   2),
-        _seg(1540,1580,  16.8, 18.0,  2,  80),
-        _seg(1580,1900,  18.0, 18.1, 80,  83),
+        _seg(1400,1540,  16.8, 16.8,  2,   2),   # sombreado 4 (G=100)
+        _seg(1540,1580,  16.8, 18.0,  2,  80),   # fin sombreado 4
+        _seg(1580,2400,  18.0, 18.1, 80,  83),   # estable hasta fin simulación
     ]
     t_mat   = np.concatenate([s[0] for s in segments])
     Vpv_mat = np.concatenate([s[1] for s in segments])
