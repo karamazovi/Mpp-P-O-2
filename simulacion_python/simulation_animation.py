@@ -14,6 +14,15 @@ from pv_panel import PanelPV
 from boost_converter import BoostConverter
 from mppt_p_and_o import MPPT_PandO
 
+# ── Perfil de irradiancia ─────────────────────────────────────────────────────
+def perfil_irradiancia(t):
+    if (0.29 <= t < 0.44 or
+        0.88 <= t < 0.99 or
+        1.18 <= t < 1.29 or
+        1.38 <= t < 1.54):
+        return 100.0
+    return 1000.0
+
 # ── Parámetros ────────────────────────────────────────────────────────────────
 parametros_panel = {
     'cells_in_series':   36,
@@ -30,7 +39,6 @@ parametros_boost = {
 }
 parametros_mppt  = {'delta_d': 0.004}
 
-irradiancia   = 1000.0
 temperatura   = 25.0
 VB            = 24.0
 dt            = 2e-5
@@ -46,13 +54,14 @@ boost = BoostConverter(parametros_boost)
 mppt  = MPPT_PandO(parametros_mppt)
 
 Vci = 15.0
-IL  = panel.calcular(irradiancia, temperatura, Vci)
+IL  = panel.calcular(1000.0, temperatura, Vci)
 Vco = VB
 D   = 1.0 - 15.0 / VB
 
-t_arr, Vpv_arr, Ipv_arr, Ppv_arr, D_arr = [], [], [], [], []
+t_arr, Vpv_arr, Ipv_arr, Ppv_arr, D_arr, G_arr = [], [], [], [], [], []
 
 for paso in range(num_pasos):
+    irradiancia = perfil_irradiancia(paso * dt)
     Ipv = panel.calcular(irradiancia, temperatura, Vci)
     Vpv = Vci
     if paso % N_mppt == 0:
@@ -64,17 +73,19 @@ for paso in range(num_pasos):
         Ipv_arr.append(Ipv)
         Ppv_arr.append(Vpv * Ipv)
         D_arr.append(D)
+        G_arr.append(irradiancia)
 
 t_arr   = np.array(t_arr)
 Vpv_arr = np.array(Vpv_arr)
 Ipv_arr = np.array(Ipv_arr)
 Ppv_arr = np.array(Ppv_arr)
 D_arr   = np.array(D_arr)
+G_arr   = np.array(G_arr)
 N_frames = len(t_arr)
 print(f"Simulación lista — {N_frames} pasos disponibles.")
 
-# Curva estática del panel
-V_curva, I_curva, P_curva = panel.curva_pv(irradiancia, temperatura, n_puntos=400)
+# Curva estática del panel (a 1000 W/m²)
+V_curva, I_curva, P_curva = panel.curva_pv(1000.0, temperatura, n_puntos=400)
 idx_mpp  = int(np.argmax(P_curva))
 Vmpp_real = V_curva[idx_mpp]
 Pmpp_real = P_curva[idx_mpp]
@@ -90,16 +101,18 @@ C_VT    = '#69f0ae'
 C_PT    = '#ce93d8'
 C_IT    = '#ffab91'
 
-fig = plt.figure(figsize=(14, 7.5))
+fig = plt.figure(figsize=(16, 8.5))
 fig.patch.set_facecolor(BG)
-gs = GridSpec(2, 3, figure=fig, hspace=0.5, wspace=0.38,
+gs = GridSpec(3, 3, figure=fig, hspace=0.55, wspace=0.38,
               left=0.06, right=0.97, top=0.91, bottom=0.18)
 
-ax_pv = fig.add_subplot(gs[:, 0])   # Curva P-V (ocupa las 2 filas)
+ax_pv = fig.add_subplot(gs[:, 0])   # Curva P-V (ocupa las 3 filas)
 ax_vt = fig.add_subplot(gs[0, 1])   # Vpv(t)
 ax_pt = fig.add_subplot(gs[1, 1])   # Ppv(t)
+ax_gt = fig.add_subplot(gs[2, 1])   # G(t)
 ax_iv = fig.add_subplot(gs[0, 2])   # Curva I-V
 ax_dt = fig.add_subplot(gs[1, 2])   # D(t)
+ax_xx = fig.add_subplot(gs[2, 2])   # espacio vacío / info
 
 def style(ax, title):
     ax.set_facecolor(BG)
@@ -113,8 +126,10 @@ def style(ax, title):
 style(ax_pv, 'Curva P-V')
 style(ax_vt, 'Voltaje del panel')
 style(ax_pt, 'Potencia del panel')
+style(ax_gt, 'Irradiancia')
 style(ax_iv, 'Curva I-V')
 style(ax_dt, 'Duty Cycle')
+ax_xx.set_visible(False)
 
 fig.suptitle('MPPT P&O — Evolución paso a paso', color='white',
              fontsize=13, fontweight='bold')
@@ -157,6 +172,12 @@ ax_dt.set_xlabel('Tiempo (ms)', color='#aaaacc', fontsize=8)
 ax_dt.set_ylabel('D', color='#aaaacc', fontsize=8)
 ax_dt.legend(fontsize=7, facecolor='#1a1a2e', labelcolor='white', edgecolor=GRID)
 
+ax_gt.axhline(1000, color=C_MPP, ls='--', lw=1, alpha=0.6, label='G=1000 W/m²')
+ax_gt.set_xlim(0, t_arr[-1]); ax_gt.set_ylim(-50, 1150)
+ax_gt.set_xlabel('Tiempo (ms)', color='#aaaacc', fontsize=8)
+ax_gt.set_ylabel('G (W/m²)', color='#aaaacc', fontsize=8)
+ax_gt.legend(fontsize=7, facecolor='#1a1a2e', labelcolor='white', edgecolor=GRID)
+
 # Elementos animados
 TRAIL = 40
 dot_pv,   = ax_pv.plot([], [], 'o',  color=C_DOT, ms=11, zorder=6)
@@ -168,6 +189,8 @@ line_pt,  = ax_pt.plot([], [], color=C_PT,  lw=1.8)
 dot_pt,   = ax_pt.plot([], [], 'o',  color=C_DOT, ms=7,  zorder=6)
 line_dt,  = ax_dt.plot([], [], color='#80cbc4', lw=1.8)
 dot_dt,   = ax_dt.plot([], [], 'o',  color=C_DOT, ms=7,  zorder=6)
+line_gt,  = ax_gt.plot([], [], color='orange',  lw=1.8)
+dot_gt,   = ax_gt.plot([], [], 'o',  color=C_DOT, ms=7,  zorder=6)
 
 info = fig.text(0.5, 0.005, '', ha='center', color='#ccccdd', fontsize=9)
 
@@ -186,6 +209,8 @@ def draw(i):
     dot_pt.set_data([t_arr[i]], [p])
     line_dt.set_data(t_arr[:i+1], D_arr[:i+1])
     dot_dt.set_data([t_arr[i]], [d])
+    line_gt.set_data(t_arr[:i+1], G_arr[:i+1])
+    dot_gt.set_data([t_arr[i]], [G_arr[i]])
 
     pct = p / Pmpp_real * 100
     info.set_text(
