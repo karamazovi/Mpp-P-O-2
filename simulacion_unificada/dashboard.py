@@ -74,7 +74,7 @@ class Dashboard(tk.Tk):
 
         # Lista compartida: el worker hace append() con GIL → thread-safe.
         # Acumula TODOS los pasos (120k para 2.4s, dt=20µs) — igual que MATLAB.
-        self._raw: list = []   # cada elemento: (t_ms, Vpv, Ipv, Ppv, D, Vref, Vco)
+        self._raw: list = []   # cada elemento: (t_ms, Vpv, Ipv, Ppv, D, Vref, Vco2, Vco1)
 
         self._build_ui()
 
@@ -169,9 +169,9 @@ class Dashboard(tk.Tk):
         f2 = ttk.LabelFrame(side, text='Controlador interno', padding=6)
         f2.pack(fill=tk.X, pady=3, padx=4)
         self.use_mpc_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(f2, text='MPC analítico  (solo INC/PSO)',
+        ttk.Checkbutton(f2, text='MPC analítico',
                         variable=self.use_mpc_var).pack(anchor=tk.W)
-        ttk.Label(f2, text='Sin MPC → steady-state D (más rápido)',
+        ttk.Label(f2, text='P&O + MPC → perturba Vref  |  Sin MPC → steady-state D',
                   font=('Arial', 8), foreground=BORDER).pack(anchor=tk.W)
 
         # ── Boost ─────────────────────────────────────────────────────────────
@@ -274,9 +274,15 @@ class Dashboard(tk.Tk):
         self._ax = [ax0, ax1, ax2, ax3]
 
         for ax, title in zip(self._ax,
-                             ['Vpv  [V]', 'Ppv  [W]', 'Ipv  [A]', 'Vref MPPT  [V]']):
+                             ['Vpv  [V]', 'Ppv  [W]  /  Vco  [V]',
+                              'Ipv  [A]', 'D  [duty cycle]']):
             self._style_ax(ax, title)
         ax3.set_xlabel('t  [ms]', color=TEXT, fontsize=7)
+
+        # Márgenes automáticos por eje — auto-zoom independiente
+        for ax in self._ax:
+            ax.margins(y=0.10)
+            ax.set_autoscaley_on(True)
 
         # Vpv + Vmpp teórico (línea horizontal) + Vref MPPT (solo INC/PSO)
         self._ln_vpv,  = ax0.plot([], [], color=GREEN,  lw=0.7, label='Vpv')
@@ -289,19 +295,32 @@ class Dashboard(tk.Tk):
                                    linestyle=':', alpha=0.7, label='Vref MPPT')
         ax0.legend(fontsize=6, facecolor=PANEL, labelcolor=TEXT, loc='upper right')
 
-        # Ppv + Pref
+        # Ppv + Pref  +  Vco en eje Y derecho (twin)
         self._ln_ppv,  = ax1.plot([], [], color=YELLOW, lw=0.7, label='Ppv')
         self._ln_pref  = ax1.axhline(PREF_W, color=WHITE, lw=0.9,
                                       linestyle='--', alpha=0.8,
                                       label=f'Pref = {PREF_W:.1f} W')
-        ax1.legend(fontsize=6, facecolor=PANEL, labelcolor=TEXT, loc='upper right')
+        self._ax1_twin = ax1.twinx()
+        self._style_ax(self._ax1_twin, '')
+        self._ax1_twin.set_ylabel('Vco  [V]', color=PURPLE, fontsize=7)
+        self._ax1_twin.tick_params(colors=PURPLE, labelsize=7)
+        self._ax1_twin.margins(y=0.12)
+        self._ax1_twin.set_autoscaley_on(True)
+        self._ln_vco, = self._ax1_twin.plot([], [], color=PURPLE, lw=0.7,
+                                              linestyle='--', alpha=0.85, label='Vco')
+        # Leyenda combinada ax1 + twin
+        lns = [self._ln_ppv, self._ln_pref, self._ln_vco]
+        ax1.legend(lns, [l.get_label() for l in lns],
+                   fontsize=6, facecolor=PANEL, labelcolor=TEXT, loc='upper right')
 
         # Ipv
         self._ln_ipv,  = ax2.plot([], [], color=PEACH,  lw=0.7, label='Ipv')
         ax2.legend(fontsize=6, facecolor=PANEL, labelcolor=TEXT, loc='upper right')
 
-        # Vref
-        self._ln_vref2, = ax3.plot([], [], color=PURPLE, lw=0.7, label='Vref')
+        # D (duty cycle) — antes era Vref redundante
+        self._ln_d, = ax3.plot([], [], color=PURPLE, lw=0.7, label='D')
+        ax3.set_ylim(0, 1)
+        ax3.set_autoscaley_on(False)   # D siempre en [0,1]
         ax3.legend(fontsize=6, facecolor=PANEL, labelcolor=TEXT, loc='upper right')
 
         self._canvas = FigureCanvasTkAgg(self.fig, master=fig_frame)
@@ -456,7 +475,7 @@ class Dashboard(tk.Tk):
     def _reset_axes(self):
         T_ms = float(self.ttotal_var.get()) * 1e3
         for ln in (self._ln_vpv, self._ln_vref, self._ln_ppv,
-                   self._ln_ipv, self._ln_vref2):
+                   self._ln_ipv, self._ln_vco, self._ln_d):
             ln.set_data([], [])
         self._ax[0].set_xlim(0, T_ms)
         self._canvas.draw_idle()
@@ -499,11 +518,12 @@ class Dashboard(tk.Tk):
 
         def _sim_worker():
             raw = self._raw          # referencia local → append() es O(1) amortizado
-            for _, t, Vpv, Ipv, Ppv, D, Vref, Vco in self._engine.iter_steps():
+            for _, t, Vpv, Ipv, Ppv, D, Vref, Vco2, Vco1 in self._engine.iter_steps():
                 if not self._running:
                     break
                 # Guardar TODOS los pasos — 120k pts para 2.4s (igual que MATLAB)
-                raw.append((t * 1e3, Vpv, Ipv, Ppv, D, Vref, Vco))
+                # Formato: (t_ms, Vpv, Ipv, Ppv, D, Vref, Vco2, Vco1)
+                raw.append((t * 1e3, Vpv, Ipv, Ppv, D, Vref, Vco2, Vco1))
             # Señal de fin (no data)
             self._sim_queue.put(None)
 
@@ -543,69 +563,75 @@ class Dashboard(tk.Tk):
         if n < 2:
             return
 
+        # ── Submuestreo ───────────────────────────────────────────────────────
         if final:
-            # Todos los pasos (120k) → resolución idéntica a MATLAB scope
-            sl = slice(None)
+            step = 1
         else:
-            # Tiempo real: submuestrear a RT_DISPLAY pts para fluidez
             step = max(1, n // RT_DISPLAY)
-            sl   = slice(0, n, step)
+        data = raw[::step]
 
-        # Convertir slice de lista a arrays numpy
-        data  = raw[sl] if isinstance(raw, np.ndarray) else raw[::step if not final else 1]
-        # Desempaquetar columnas
-        arr   = np.array(data)          # shape (m, 7)
-        t_ms  = arr[:, 0]
-        Vpv   = arr[:, 1]
-        Ipv   = arr[:, 2]
-        Ppv   = arr[:, 3]
-        Vref  = arr[:, 5]
-        T_ms  = float(self.ttotal_var.get()) * 1e3
+        # Conversión a numpy — una sola vez por frame
+        arr  = np.array(data, dtype=np.float32)   # float32 → mitad de memoria
+        t_ms = arr[:, 0]
+        Vpv  = arr[:, 1]
+        Ipv  = arr[:, 2]
+        Ppv  = arr[:, 3]
+        D    = arr[:, 4]
+        Vref = arr[:, 5]
+        Vco  = arr[:, 6]   # Vco2: tensión condensador
+        # arr[:,7] = Vco1 (tensión terminal batería ≈ VB, constante)
+        T_ms = float(self.ttotal_var.get()) * 1e3
 
-        # Vpv + Vref
+        # ── Eje X compartido ──────────────────────────────────────────────────
+        x_max = max(float(t_ms[-1]), T_ms)
+        self._ax[0].set_xlim(0, x_max)
+
+        # ── ax0: Vpv + Vref — auto-zoom Y independiente ───────────────────────
         self._ln_vpv.set_data(t_ms, Vpv)
         self._ln_vref.set_data(t_ms, Vref)
-        self._ax[0].set_xlim(0, max(float(t_ms[-1]), T_ms))
-        v_lo = max(0.0, min(float(Vpv.min()), float(Vref.min())) - 1)
-        v_hi = max(float(Vpv.max()), float(Vref.max())) + 1
-        self._ax[0].set_ylim(v_lo, v_hi)
+        self._ax[0].relim()
+        self._ax[0].autoscale_view(scalex=False, scaley=True)
 
-        # Ppv
+        # ── ax1: Ppv + Vco — auto-zoom Y por cada eje ─────────────────────────
         self._ln_ppv.set_data(t_ms, Ppv)
-        _pref = self._engine.Pref if self._engine else PREF_W
-        self._ax[1].set_ylim(0, max(_pref * 1.15, float(Ppv.max()) * 1.05))
+        self._ax[1].relim()
+        self._ax[1].autoscale_view(scalex=False, scaley=True)
+        self._ln_vco.set_data(t_ms, Vco)
+        self._ax1_twin.relim()
+        self._ax1_twin.autoscale_view(scalex=False, scaley=True)
 
-        # Ipv
+        # ── ax2: Ipv — auto-zoom Y ────────────────────────────────────────────
         self._ln_ipv.set_data(t_ms, Ipv)
-        self._ax[2].set_ylim(0, max(float(Ipv.max()) * 1.15, 1.0))
+        self._ax[2].relim()
+        self._ax[2].autoscale_view(scalex=False, scaley=True)
 
-        # Vref standalone
-        self._ln_vref2.set_data(t_ms, Vref)
-        self._ax[3].set_ylim(max(0.0, float(Vref.min()) - 1),
-                              float(Vref.max()) + 1)
+        # ── ax3: D (duty cycle) — rango fijo [0,1] ────────────────────────────
+        self._ln_d.set_data(t_ms, D)
 
         # ── Punto de operación sobre la curva P-V ─────────────────────────────
-        # Último punto disponible = posición actual en la curva
         Vpv_last = float(Vpv[-1])
         Ppv_last = float(Ppv[-1])
         self._dot_op.set_data([Vpv_last], [Ppv_last])
         self._ln_vpv_v.set_xdata([Vpv_last, Vpv_last])
 
-        # Etiqueta dinámica con distancia al MPP
-        vmpp = getattr(self, '_vmpp_teorico', 18.1)
-        pmpp = getattr(self, '_pmpp_teorico', PREF_W)
-        err  = abs(Vpv_last - vmpp)
-        pct  = Ppv_last / pmpp * 100 if pmpp > 0 else 0
-        self._dot_op.set_label(
-            f'Op. actual  ({Vpv_last:.2f} V, {Ppv_last:.1f} W)\n'
-            f'|ΔV| = {err:.2f} V  —  {pct:.1f}% Pmpp')
-        self._ax_pv.legend(fontsize=6, facecolor=PANEL, labelcolor=TEXT,
-                           loc='upper right')
-
+        # Leyenda P-V: solo se actualiza al final (costosa, innecesaria en RT)
         if final:
-            self._canvas.draw()       # bloqueante — render completo de alta res
+            vmpp = getattr(self, '_vmpp_teorico', 18.1)
+            pmpp = getattr(self, '_pmpp_teorico', PREF_W)
+            err  = abs(Vpv_last - vmpp)
+            pct  = Ppv_last / pmpp * 100 if pmpp > 0 else 0
+            D_last = float(D[-1])
+            eta  = (Ppv_last / (float(self._get_VB()) * float(Ipv[-1]) *
+                                (1.0 - D_last) + 1e-9)) * 100 \
+                   if float(Ipv[-1]) * (1.0 - D_last) > 0 else float('nan')
+            self._dot_op.set_label(
+                f'Op. actual  ({Vpv_last:.2f} V, {Ppv_last:.1f} W)\n'
+                f'|ΔV| = {err:.2f} V  —  {pct:.1f}% Pmpp')
+            self._ax_pv.legend(fontsize=6, facecolor=PANEL, labelcolor=TEXT,
+                               loc='upper right')
+            self._canvas.draw()       # bloqueante — render completo
         else:
-            self._canvas.draw_idle()  # asíncrono durante animación
+            self._canvas.draw_idle()  # asíncrono — sin rebuild de leyendas
 
     # ── Comparar ──────────────────────────────────────────────────────────────
     def _compare(self):
@@ -645,7 +671,7 @@ class Dashboard(tk.Tk):
                                      label=a.upper(), alpha=0.9)
                     self._ax[2].plot(tm, rv['Ipv'][s],  color=c, lw=0.7,
                                      label=a.upper(), alpha=0.9)
-                    self._ax[3].plot(tm, rv['Vref'][s], color=c, lw=0.7,
+                    self._ax[3].plot(tm, rv['D'][s], color=c, lw=0.7,
                                      label=a.upper(), alpha=0.9)
                     for ax in self._ax:
                         ax.legend(fontsize=6, facecolor=PANEL, labelcolor=TEXT)

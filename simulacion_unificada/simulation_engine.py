@@ -93,8 +93,10 @@ class SimulationEngine:
         else:
             self._custom_obj  = None
             self._custom_mode = None
-        is_d_space = (mppt_algo == 'po') or (mppt_algo == 'custom' and self._custom_mode == 'po')
-        self.use_mpc     = use_mpc and not is_d_space
+        # MPC disponible para todos los algoritmos.
+        # P&O con MPC usa step_vref() en lugar de step() → Vref → D via MPC.
+        # P&O sin MPC usa step() en D-space (comportamiento clásico).
+        self.use_mpc     = use_mpc
         self.T_total     = T_total
         self.dt          = dt
         self.T_mpc       = T_mpc
@@ -126,8 +128,17 @@ class SimulationEngine:
             _bp.update(boost_params)
         self.boost = BoostConverter(_bp)
 
-        # ── MPC ────────────────────────────────────────────────────────────────
-        self.mpc = MPC(self.boost, mpc_params) if self.use_mpc else None
+        # Potencia de referencia teórica — se calcula ANTES del MPC para tener Impp
+        Vmpp, Impp, Pmpp = self.panel.mpp(1000.0, temperatura)
+        self.Pref  = Pmpp
+        self.Vmpp  = Vmpp
+        self.Impp  = Impp
+
+        # ── MPC — recibe Impp_ref del panel para la corrección de corriente ────
+        _mpc_p = {'Impp_ref': Impp}
+        if mpc_params:
+            _mpc_p.update(mpc_params)
+        self.mpc = MPC(self.boost, _mpc_p) if self.use_mpc else None
 
         # ── MPPT ───────────────────────────────────────────────────────────────
         _mp = mppt_params or {}
@@ -141,11 +152,6 @@ class SimulationEngine:
         else:
             cls = _algo_map[mppt_algo]
             self.mppt = cls(_mp, panel=self.panel) if mppt_algo == 'pso' else cls(_mp)
-
-        # Potencia de referencia teórica (línea Pref en dashboard)
-        Vmpp, Impp, Pmpp = self.panel.mpp(1000.0, temperatura)
-        self.Pref  = Pmpp
-        self.Vmpp  = Vmpp
         self.Impp  = Impp
 
         self.results: dict = {}
@@ -153,7 +159,7 @@ class SimulationEngine:
     # ── Generador paso-a-paso ──────────────────────────────────────────────────
     def iter_steps(self):
         """
-        Genera (k, t, Vpv, Ipv, Ppv, D, Vref, Vco) por cada paso.
+        Genera (k, t, Vpv, Ipv, Ppv, D, Vref, Vco2, Vco1) por cada paso.
         Permite actualizar gráficas en tiempo real desde el dashboard.
         """
         num_pasos = int(self.T_total / self.dt)
@@ -167,14 +173,19 @@ class SimulationEngine:
         D    = 1.0 - Vci0 / self.VB   # 0.375
         self.boost.reset(Vci0=Vci0, IL0=IL0, Vco0=self.VB)
 
-        # Reset MPPT si tiene método reset
-        _is_d_space = (self.mppt_algo == 'po') or \
-                      (self.mppt_algo == 'custom' and self._custom_mode == 'po')
+        # P&O en D-space solo cuando MPC está desactivado
+        _po_d_space = (self.mppt_algo == 'po' and not self.use_mpc) or \
+                      (self.mppt_algo == 'custom' and
+                       self._custom_mode == 'po' and not self.use_mpc)
+
+        # Reset MPPT — intentar pasar D0 y Vref0; si no acepta ambos, usar solo el relevante
         if hasattr(self.mppt, 'reset'):
-            if _is_d_space:
-                self.mppt.reset(D0=D)
-            else:
-                self.mppt.reset(Vref0=Vci0)
+            import inspect
+            _reset_sig = inspect.signature(self.mppt.reset).parameters
+            _kw = {}
+            if 'D0'    in _reset_sig: _kw['D0']    = D
+            if 'Vref0' in _reset_sig: _kw['Vref0'] = Vci0
+            self.mppt.reset(**_kw)
 
         Vref = Vci0
 
@@ -187,25 +198,33 @@ class SimulationEngine:
             # ── MPPT ─────────────────────────────────────────────────────────
             if k % paso_mppt == 0:
                 if self.mppt_algo == 'po':
-                    D    = self.mppt.step(Vpv, Ipv, D)
-                    Vref = Vpv
+                    if _po_d_space:
+                        # Modo clásico: P&O perturba D directamente
+                        D    = self.mppt.step(Vpv, Ipv, D)
+                        Vref = Vpv
+                    else:
+                        # Modo Vref: P&O perturba Vref, MPC convierte a D
+                        Vref = self.mppt.step_vref(Vpv, Ipv, Vref)
                 elif self.mppt_algo == 'inc':
                     Vref = self.mppt.step(Vpv, Ipv)
                 elif self.mppt_algo == 'pso':
                     Vref = self.mppt.step(Vpv, Ipv, G=G, T=self.temperatura)
                 else:  # custom
-                    if self._custom_mode == 'po':
+                    if self._custom_mode == 'po' and _po_d_space:
                         D    = self.mppt.step(Vpv, Ipv, D)
                         Vref = Vpv
+                    elif self._custom_mode == 'po':
+                        Vref = self.mppt.step_vref(Vpv, Ipv, Vref) \
+                               if hasattr(self.mppt, 'step_vref') \
+                               else self.mppt.step(Vpv, Ipv, D)
                     else:
-                        # Vref mode: intentar con G,T si los acepta
                         try:
                             Vref = self.mppt.step(Vpv, Ipv, G, self.temperatura)
                         except TypeError:
                             Vref = self.mppt.step(Vpv, Ipv)
 
             # ── Control interno (Vref → D) ────────────────────────────────────
-            if not _is_d_space and k % paso_mpc == 0:
+            if not _po_d_space and k % paso_mpc == 0:
                 if self.use_mpc:
                     D = self.mpc.compute(
                         self.boost.Vci, self.boost.IL, self.boost.Vco,
@@ -215,26 +234,28 @@ class SimulationEngine:
                     D = self.boost.steady_state_D(Vref, self.boost.IL, self.VB)
 
             # ── Boost ─────────────────────────────────────────────────────────
-            _Vci, _IL, Vco = self.boost.step(Vpv, Ipv, D, self.VB)
+            _Vci, _IL, Vco2, Vco1 = self.boost.step(Vpv, Ipv, D, self.VB)
 
-            yield k, t, Vpv, Ipv, Ppv, D, Vref, Vco
+            yield k, t, Vpv, Ipv, Ppv, D, Vref, Vco2, Vco1
 
     # ── Ejecución completa ─────────────────────────────────────────────────────
     def run(self, verbose: bool = False) -> dict:
         n = int(self.T_total / self.dt)
-        t_a   = np.empty(n); Vpv_a = np.empty(n); Ipv_a = np.empty(n)
-        Ppv_a = np.empty(n); D_a   = np.empty(n)
-        Vref_a= np.empty(n); Vco_a = np.empty(n)
+        t_a    = np.empty(n); Vpv_a = np.empty(n); Ipv_a = np.empty(n)
+        Ppv_a  = np.empty(n); D_a   = np.empty(n)
+        Vref_a = np.empty(n); Vco2_a= np.empty(n); Vco1_a= np.empty(n)
 
-        for k, t, Vpv, Ipv, Ppv, D, Vref, Vco in self.iter_steps():
+        for k, t, Vpv, Ipv, Ppv, D, Vref, Vco2, Vco1 in self.iter_steps():
             t_a[k]=t; Vpv_a[k]=Vpv; Ipv_a[k]=Ipv; Ppv_a[k]=Ppv
-            D_a[k]=D; Vref_a[k]=Vref; Vco_a[k]=Vco
+            D_a[k]=D; Vref_a[k]=Vref; Vco2_a[k]=Vco2; Vco1_a[k]=Vco1
             if verbose and k % 20000 == 0:
-                print(f"  t={t*1e3:.0f}ms  Vpv={Vpv:.2f}V  Ppv={Ppv:.2f}W  D={D:.4f}")
+                print(f"  t={t*1e3:.0f}ms  Vpv={Vpv:.2f}V  Ppv={Ppv:.2f}W  "
+                      f"D={D:.4f}  Vco2={Vco2:.2f}V")
 
         self.results = {
             't': t_a, 'Vpv': Vpv_a, 'Ipv': Ipv_a,
-            'Ppv': Ppv_a, 'D': D_a, 'Vref': Vref_a, 'Vco': Vco_a,
+            'Ppv': Ppv_a, 'D': D_a, 'Vref': Vref_a,
+            'Vco': Vco2_a, 'Vco2': Vco2_a, 'Vco1': Vco1_a,
         }
         return self.results
 

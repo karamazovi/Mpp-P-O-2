@@ -400,8 +400,8 @@ def launch(engine: SimulationEngine = None,
 
     # ── Hilo worker: corre la simulación en paralelo ──────────────────────────
     def _sim_worker():
-        for _, t, Vpv, Ipv, Ppv, D, Vref, Vco in engine.iter_steps():
-            _raw.append((t * 1e3, Vpv, Ipv, Ppv, D, Vref, Vco))
+        for _, t, Vpv, Ipv, Ppv, D, Vref, Vco2, _Vco1 in engine.iter_steps():
+            _raw.append((t * 1e3, Vpv, Ipv, Ppv, D, Vref, Vco2))
         _state['done'] = True
 
     threading.Thread(target=_sim_worker, daemon=True).start()

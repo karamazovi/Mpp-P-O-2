@@ -17,14 +17,17 @@ class MPC:
     def __init__(self, boost, parametros=None):
         p = parametros or {}
         self.boost    = boost
-        self.lambda_u = p.get('lambda_u', 10.0)
+        self.lambda_u = p.get('lambda_u', 10.0)  # peso suavizado ΔD
+        self.lambda_i = p.get('lambda_i',  0.5)  # peso error de corriente (Simulink: 4.7A ref)
         self.VB_nom   = p.get('VB_nom',   24.0)
+        self.Impp_ref = p.get('Impp_ref',  4.7)  # corriente en MPP [A] — entrada md Simulink
 
     def calcular_D(self, Vci, IL, Vco, VB, Ipv, Vref, D_prev):
         RL  = self.boost.RL
         Ron = self.boost.Ron
         RB  = self.boost.RB + self.boost.RCo   # incluye ESR
 
+        # ── Solución cuadrática de estado estacionario ────────────────────────
         a_q = IL * RB
         b_q = VB - IL * Ron
         c_q = IL * (RL + Ron) - Vref
@@ -42,8 +45,14 @@ class MPC:
         else:
             D_ss = float(np.clip(1.0 - Vref / VB, 0.05, 0.95))
 
+        # ── Función de costo: tensión + suavizado + corrección de corriente ───
+        # Error de corriente: (Ipv - Impp_ref)
+        #   Ipv < Impp_ref → reducir D para elevar Vpv y captar más corriente
+        #   Ipv > Impp_ref → aumentar D
+        i_err = Ipv - self.Impp_ref
         VB2   = VB ** 2
-        D_opt = (VB2 * D_ss + self.lambda_u * D_prev) / (VB2 + self.lambda_u)
+        D_opt = (VB2 * D_ss + self.lambda_u * D_prev - self.lambda_i * i_err) \
+                / (VB2 + self.lambda_u)
         return float(np.clip(D_opt, 0.05, 0.95))
 
     # alias para compatibilidad con SimulationEngine
